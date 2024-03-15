@@ -107,3 +107,6 @@ tests/
 # demo_results
 docs/*/results/
 docs/*/data/
+
+# Ignore .m5 files
+*.m5
