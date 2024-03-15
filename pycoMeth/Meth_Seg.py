@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import IO, List
-from multiprocessing import Queue, Process
+from multiprocessing import Queue, Process, Pool, Manager
 import logging
 
 import tqdm
@@ -13,16 +13,19 @@ from pycoMeth.meth_seg.segment import segment
 from pycoMeth.common import pycoMethError, get_logger
 
 
-def worker_segment(input_queue: Queue, output_queue: Queue, max_segments_per_window: int):
+def worker_segment(input_queue: Queue, output_queue: Queue, max_segments_per_window: int, verbose: bool = False, core_number: int = None, log: logging.Logger = None,):
     import warnings
     
     warnings.filterwarnings("ignore")
     
     while True:
+        log.debug(f"Core {core_number}: Waiting for job in worker_segment")
         job = input_queue.get()
         if job is None:
+            log.debug(f"Core {core_number}: No more jobs for worker_segment")
             break
         
+        log.debug(f"Core {core_number}: Processing job in worker_segment")
         sparse_matrix, fraction = job
         llrs = sparse_matrix.met_matrix
         
@@ -38,7 +41,7 @@ def worker_segment(input_queue: Queue, output_queue: Queue, max_segments_per_win
             )
         else:
             # Perform segmentation
-            segmentation = segment(sparse_matrix, max_segments_per_window)
+            segmentation = segment(sparse_matrix, max_segments_per_window, verbose, core_number, log)
             result_tuple = (
                 llrs,
                 segmentation,
@@ -46,6 +49,7 @@ def worker_segment(input_queue: Queue, output_queue: Queue, max_segments_per_win
                 sparse_matrix.genomic_coord_end,
                 sparse_matrix.read_samples,
             )
+        log.debug(f"Core {core_number}: Putting result in output queue in worker_segment")
         output_queue.put((result_tuple, fraction))
 
 
@@ -57,15 +61,20 @@ def worker_output(
     read_groups_keys: str,
     print_diff_met: bool,
     quiet: bool,
+    core_number: int = None, 
+    log: logging.Logger = None,
 ):
     writers = [SegmentsWriterBED(out_tsv_file, chromosome)]
     if out_bedgraph_filebase is not None:
         writers.append(SegmentsWriterBedGraph(out_bedgraph_filebase, chromosome))
     with tqdm.tqdm(total=100) as pbar:
         while True:
+            log.debug(f"Core {core_number}: Waiting for result in worker_output")
             res = output_queue.get()
             if res is None:
+                log.debug(f"Core {core_number}: No more results for worker_output")
                 break
+            log.debug(f"Core {core_number}: Processing result in worker_output")
             seg_result, fraction = res
             llrs, segments, genomic_starts, genomic_ends, samples = seg_result
             
@@ -113,12 +122,16 @@ def worker_reader(
     progress_per_chunk: float,
     read_groups_keys: List[str],
     read_groups_to_include: List[str],
+    core_number: int = None, 
+    log: logging.Logger = None,
 ):
+    log.debug(f"Core {core_number}: Reader worker started with chunks {chunks}")
     firstfile = m5files[0]
     with MetH5File(firstfile, "r", chunk_size=chunk_size) as m5:
         chrom_container = m5[chromosome]
         
         for chunk in chunks:
+            log.debug(f"Core {core_number}: Processing chunk {chunk}")  # Debug line
             values_container = chrom_container.get_chunk(chunk)
             chunk_start, chunk_end = values_container.chromosome.h5group["chunk_ranges"][chunk]
             met_matrix = load_met_matrix(firstfile.name, values_container, read_groups_keys, read_groups_to_include)
@@ -142,9 +155,10 @@ def worker_reader(
             progress_per_window = progress_per_chunk / num_windows
             for window_start in range(0, total_sites + 1, window_size):
                 window_end = window_start + window_size
-                logging.debug(f"Submitting window {window_start}-{window_end}")
+                log.debug(f"Core {core_number}: Submitting window {window_start}-{window_end} in worker_reader")
                 sub_matrix = met_matrix.get_submatrix(window_start, window_end)
                 input_queue.put((sub_matrix, progress_per_window))
+    log.debug(f"Core {core_number}: Reader worker finished with chunks {chunks}")  # Debug line
 
 
 def validate_chromosome_selection(m5file: Path, chromosome: str, chunk_size: int):
@@ -238,9 +252,10 @@ def Meth_Seg(
     chunks = sorted(list(set(chunks)))
     progress_per_chunk = 100 / len(chunks)
     
-    segmentation_processes = [Process(target=worker_segment, args=(input_queue, output_queue, max_segments_per_window))]
-    for p in segmentation_processes:
-        p.start()
+    # segmentation_processes = [Process(target=worker_segment, args=(input_queue, output_queue, max_segments_per_window))]
+    segmentation_processes = [Process(target=worker_segment, args=(input_queue, output_queue, max_segments_per_window, verbose, core_number, log)) for core_number in range(workers)]
+    # for p in segmentation_processes:
+    #     p.start()
     
     reader_workers = min(reader_workers, len(chunks))
     chunk_per_process = np.array_split(chunks, reader_workers)
@@ -257,12 +272,16 @@ def Meth_Seg(
                 progress_per_chunk,
                 read_groups_keys,
                 read_groups_to_include,
+                core_number, 
+                log,
             ),
         )
-        for p_chunks in chunk_per_process
+        for core_number, p_chunks in enumerate(chunk_per_process)
     ]
-    for p in reader_processes:
-        p.start()
+    # for p in reader_processes:
+    #     p.start()
+
+    core_number = 0
     
     output_process = Process(
         target=worker_output,
@@ -274,13 +293,22 @@ def Meth_Seg(
             read_groups_keys,
             print_diff_met,
             not progress,
+            core_number, 
+            log,
         ),
     )
+
+    for p in reader_processes:
+        p.start()
+
+    for p in segmentation_processes:
+        p.start()
+
     output_process.start()
     
     for p in reader_processes:
         p.join()
-    
+
     # Deal poison pills to segmentation workers
     for p in segmentation_processes:
         input_queue.put(None)

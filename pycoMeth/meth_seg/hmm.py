@@ -2,6 +2,8 @@ from typing import Tuple, Dict
 
 import numpy as np
 import scipy.optimize
+from pomegranate import *
+import time
 
 from pycoMeth.meth_seg.emissions import EmissionLikelihoodFunction
 
@@ -56,34 +58,71 @@ class SegmentationHMM:
         
         raise RuntimeError("Transition %d to %d is not a valid transition in segmentation " "HMM " % (i, j))
     
+    # def forward(self, observations, obs_c):
+    #     e_fn = self.e_fn.likelihood
+    #     M = self.num_segments
+    #     R = observations.shape[0]
+    #     N = observations.shape[1]
+    #     F = np.zeros((N, M), dtype=np.float) + self.eps
+    #     F[0, 0] = 1 - F[0, :].sum() - self.eps
+    #     F = np.log(F)
+    #     start_prob = np.zeros(M) + self.eps
+    #     start_prob[0] = 1
+    #     start_prob = np.log(start_prob)
+        
+    #     for k in range(N):
+    #         o = observations[:, k]
+    #         for i in range(M):
+    #             e = e_fn(i, o, obs_c)
+                
+    #             if k == 0:
+    #                 F[k, i] = e + start_prob[i]
+    #                 continue
+                    
+    #                 # Stay probability
+    #             F[k, i] = e + F[k - 1, i] + self.t_fn(i, i)
+                
+    #             # Move probabilty
+    #             if i > 0:
+    #                 F[k, i] = logaddexp(F[k, i], e + F[k - 1, i - 1] + self.t_fn(i - 1, i))
+                
+    #             # End probability
+    #             if i == M - 1:
+    #                 # if end state we could have come from anywhere to the
+    #                 # end state:
+    #                 for j in range(M - 2):  # exclude last 2 because those were already
+    #                     # handled above
+    #                     F[k, i] = logaddexp(F[k, i], e + F[k - 1, j] + self.t_fn(j, i))
+    #     evidence = F[-1, -1]
+    #     return F, evidence
+
     def forward(self, observations, obs_c):
         e_fn = self.e_fn.likelihood
         M = self.num_segments
-        R = observations.shape[0]
         N = observations.shape[1]
-        F = np.zeros((N, M), dtype=np.float) + self.eps
+        F = np.full((N, M), self.eps, dtype=np.float)
         F[0, 0] = 1 - F[0, :].sum() - self.eps
         F = np.log(F)
-        start_prob = np.zeros(M) + self.eps
+        start_prob = np.full(M, self.eps)
         start_prob[0] = 1
         start_prob = np.log(start_prob)
-        
+
         for k in range(N):
             o = observations[:, k]
             for i in range(M):
                 e = e_fn(i, o, obs_c)
-                
+
                 if k == 0:
                     F[k, i] = e + start_prob[i]
                     continue
-                    
-                    # Stay probability
+
+                # Stay probability
                 F[k, i] = e + F[k - 1, i] + self.t_fn(i, i)
-                
-                # Move probabilty
+
+                # Move probability
                 if i > 0:
                     F[k, i] = logaddexp(F[k, i], e + F[k - 1, i - 1] + self.t_fn(i - 1, i))
-                
+
                 # End probability
                 if i == M - 1:
                     # if end state we could have come from anywhere to the
@@ -234,93 +273,169 @@ class SegmentationHMM:
         
         return X, Z
     
-    def baum_welch(
-        self,
-        observations: np.ndarray,
-        tol: float = np.exp(-4),
-        it_hook=None,
-        samples: np.ndarray = None,
-        verbose: bool = False,
-    ) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
-        """
-        Run the baum_welch algorithm, an expectation maximization algorithm,
-        to find a segmentation of the methylation signal.
+    # def baum_welch(
+    #     self,
+    #     observations: np.ndarray,
+    #     tol: float = np.exp(-4),
+    #     it_hook=None,
+    #     samples: np.ndarray = None,
+    #     verbose: bool = False,
+    # ) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
+    #     """
+    #     Run the baum_welch algorithm, an expectation maximization algorithm,
+    #     to find a segmentation of the methylation signal.
 
-        Note that this algorithm is rather memory expensive. It will take
-        O(CM) memory where C is the number of samples and M the maximum number
-        of segments. If no samples are provided, C is equal to the number of
-        reads, meaning the memory requirement grows with the read coverage.
+    #     Note that this algorithm is rather memory expensive. It will take
+    #     O(CM) memory where C is the number of samples and M the maximum number
+    #     of segments. If no samples are provided, C is equal to the number of
+    #     reads, meaning the memory requirement grows with the read coverage.
 
-        :param observations: a numpy array of shape RxN, where R is the
-        number of reads and N is the number of gennomic positions (or CpG
-        sites). The values need to be in the range (0,1) and are methylation
-        predictions for the individual CpG sites. In order to speed up
-        computation, missing predictions can be labeled with the value -1.
-        This should lead to the same result as setting it to the value 0.5,
-        but reduces the number of computations required significantly.
-        :param tol: The absolute maximum difference in a parameter value that
-        determines convergence. If the difference is below tol, the algorithm
-        aborts
-        :param it_hook: A function hook that will be called after each
-        iteration. Takes the same parameters as the return value of this
-        function
-        :param samples: A 1-dimensional numpy array of length R, assigns each
-        read to a sample id. Sample ids must be integer, and must start from
-        0 and have no gaps.
-        :return: tuple with estimated parameters and posteriors. Estimated
-        paramater type depends on the given emission probability class.
-        Posterior is of shape NxM and gives the posterior probability of each
-        genomic site n being in each segment m
-        """
-        # Initial guess of parameters
-        R = observations.shape[0]
-        N = observations.shape[1]
+    #     :param observations: a numpy array of shape RxN, where R is the
+    #     number of reads and N is the number of gennomic positions (or CpG
+    #     sites). The values need to be in the range (0,1) and are methylation
+    #     predictions for the individual CpG sites. In order to speed up
+    #     computation, missing predictions can be labeled with the value -1.
+    #     This should lead to the same result as setting it to the value 0.5,
+    #     but reduces the number of computations required significantly.
+    #     :param tol: The absolute maximum difference in a parameter value that
+    #     determines convergence. If the difference is below tol, the algorithm
+    #     aborts
+    #     :param it_hook: A function hook that will be called after each
+    #     iteration. Takes the same parameters as the return value of this
+    #     function
+    #     :param samples: A 1-dimensional numpy array of length R, assigns each
+    #     read to a sample id. Sample ids must be integer, and must start from
+    #     0 and have no gaps.
+    #     :return: tuple with estimated parameters and posteriors. Estimated
+    #     paramater type depends on the given emission probability class.
+    #     Posterior is of shape NxM and gives the posterior probability of each
+    #     genomic site n being in each segment m
+    #     """
+    #     # Initial guess of parameters
+    #     R = observations.shape[0]
+    #     N = observations.shape[1]
         
-        if N < 2:
-            raise ValueError("Observations must contain at least 2 CpG-sites")
-        if any((observations != -1).sum(axis=0) == 0):
-            raise ValueError("Observations must not include reads with zero observations")
-        if any((observations != -1).sum(axis=1) == 0):
-            raise ValueError("Observations must not include sites with zero observations")
+    #     if N < 2:
+    #         raise ValueError("Observations must contain at least 2 CpG-sites")
+    #     if any((observations != -1).sum(axis=0) == 0):
+    #         raise ValueError("Observations must not include reads with zero observations")
+    #     if any((observations != -1).sum(axis=1) == 0):
+    #         raise ValueError("Observations must not include sites with zero observations")
         
-        if samples is None:
-            # No samples, then we use the identity
-            self.obs_c = np.arange(R)
-        else:
-            self.obs_c = samples
+    #     if samples is None:
+    #         # No samples, then we use the identity
+    #         self.obs_c = np.arange(R)
+    #     else:
+    #         self.obs_c = samples
         
-        C = len(set(self.obs_c))
+    #     C = len(set(self.obs_c))
         
-        for it in range(100):
-            F, f_evidence = self.forward(observations, self.obs_c)
-            B, b_evidence = self.backward(observations, self.obs_c)
-            # Sanity check: fwd and bwd algorithm should return same evidence
-            if np.abs(f_evidence - b_evidence) > 10e-6:
-                print("WARNING: forward evidence %f does not equal backward " "evidence %f." % (f_evidence, b_evidence))
+    #     for it in range(100):
+    #         F, f_evidence = self.forward(observations, self.obs_c)
+    #         B, b_evidence = self.backward(observations, self.obs_c)
+    #         # Sanity check: fwd and bwd algorithm should return same evidence
+    #         if np.abs(f_evidence - b_evidence) > 10e-6:
+    #             print("WARNING: forward evidence %f does not equal backward " "evidence %f." % (f_evidence, b_evidence))
             
-            posterior = F + B - b_evidence
+    #         posterior = F + B - b_evidence
             
-            # Maximize
-            segment_p_new = {}
+    #         # Maximize
+    #         segment_p_new = {}
             
-            for c in range(C):
-                old_params = self.e_fn.get_cluster_params(c)
-                to_minimize = self.e_fn.minimization_objective(observations[self.obs_c == c], np.exp(posterior))
-                bounds = self.e_fn.get_param_bounds()
+    #         for c in range(C):
+    #             old_params = self.e_fn.get_cluster_params(c)
+    #             to_minimize = self.e_fn.minimization_objective(observations[self.obs_c == c], np.exp(posterior))
+    #             bounds = self.e_fn.get_param_bounds()
                 
-                estimated_p = scipy.optimize.minimize(to_minimize, old_params, method="SLSQP", bounds=bounds).x
-                segment_p_new[c] = np.log(estimated_p)
+    #             estimated_p = scipy.optimize.minimize(to_minimize, old_params, method="SLSQP", bounds=bounds).x
+    #             segment_p_new[c] = np.log(estimated_p)
             
-            diff = self.e_fn.update_params(segment_p_new)
+    #         diff = self.e_fn.update_params(segment_p_new)
             
-            segment_p = segment_p_new
+    #         segment_p = segment_p_new
             
-            if it_hook is not None:
-                it_hook(segment_p, posterior)
+    #         if it_hook is not None:
+    #             it_hook(segment_p, posterior)
             
-            if verbose:
-                print("Iteration %d, parameter difference: %f" % (it, diff))
-            if diff < tol:
-                break
+    #         if verbose:
+    #             print("Iteration %d, parameter difference: %f" % (it, diff))
+    #         if diff < tol:
+    #             break
         
-        return segment_p, posterior
+    #     return segment_p, posterior
+
+    def baum_welch(
+            self,
+            observations: np.ndarray,
+            tol: float = np.exp(-4),
+            it_hook=None,
+            samples: np.ndarray = None,
+            verbose: bool = False,
+            early_stopping_tol: float = 1e-5,
+        ) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
+
+            start_time = time.time()
+
+            R = observations.shape[0]
+            N = observations.shape[1]
+            
+            if samples is None:
+                self.obs_c = np.arange(R)
+            else:
+                self.obs_c = samples
+            
+            C = len(set(self.obs_c))
+
+            prev_diff = float('inf')  # Initialize the previous difference to infinity
+
+            for it in range(100):
+                start_time_it = time.time()
+
+                F, f_evidence = self.forward(observations, self.obs_c)
+                B, b_evidence = self.backward(observations, self.obs_c)
+
+                if verbose:
+                    print(f'Time taken for forward and backward: {time.time() - start_time_it}')
+
+                posterior = F + B - b_evidence
+
+                start_time_it = time.time()
+
+                segment_p_new = {}
+
+                for c in range(C):
+                    old_params = self.e_fn.get_cluster_params(c)
+                    to_minimize = self.e_fn.minimization_objective(observations[self.obs_c == c], np.exp(posterior))
+                    bounds = self.e_fn.get_param_bounds()
+
+                    estimated_p = scipy.optimize.minimize(to_minimize, old_params, method="SLSQP", bounds=bounds).x
+                    # estimated_p = scipy.optimize.minimize(to_minimize, old_params, method="L-BFGS-B", bounds=bounds).x
+                    segment_p_new[c] = np.log(estimated_p)
+
+                if verbose:
+                    print(f'Time taken for optimization in iteration {it}: {time.time() - start_time_it}')
+
+                diff = self.e_fn.update_params(segment_p_new)
+
+                # Early stopping condition
+                if abs(prev_diff - diff) < early_stopping_tol:
+                    if verbose:
+                        print(f'Early stopping at iteration {it} due to small change in difference')
+                    break
+
+                prev_diff = diff  # Update the previous difference
+
+                segment_p = segment_p_new
+
+                if it_hook is not None:
+                    it_hook(segment_p, posterior)
+
+                if verbose:
+                    print("Iteration %d, parameter difference: %f" % (it, diff))
+                if diff < tol:
+                    break
+
+            if verbose:
+                print(f'Total time taken: {time.time() - start_time}')
+
+            return segment_p, posterior

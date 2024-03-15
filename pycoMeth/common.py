@@ -22,7 +22,7 @@ import colorlog
 # Optional static export deps
 try:
     from kaleido.scopes.plotly import PlotlyScope
-    from IPython.core.display import SVG, display
+    from IPython.display import SVG, display
     
     STATIC_EXPORT = True
 except (ModuleNotFoundError, ImportError) as E:
@@ -221,7 +221,7 @@ def arg_from_docstr(parser, func, arg_name, short_name=None):
     parser.add_argument(*arg_names, **arg_dict)
 
 
-def jhelp(f: "python function or method"):
+def jhelp(f):
     """
     Display a Markdown pretty help message for functions and class methods (default __init__ is a class is passed)
     jhelp also display default values and type annotations if available.
@@ -230,7 +230,7 @@ def jhelp(f: "python function or method"):
         Function or method to display the help message for
     """
     # Private import as this is only needed if using jupyter
-    from IPython.core.display import display, Markdown
+    from IPython.display import display, Markdown
     
     f_doc = doc_func(f)
     arg_doc = make_arg_dict(f)
