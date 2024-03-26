@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Dict
 
 import numpy as np
+import scipy.stats
 
 
 class EmissionLikelihoodFunction(ABC):

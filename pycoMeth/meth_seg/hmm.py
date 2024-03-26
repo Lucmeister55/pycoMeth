@@ -2,8 +2,8 @@ from typing import Tuple, Dict
 
 import numpy as np
 import scipy.optimize
-from pomegranate import *
 import time
+from hmmlearn import hmm as hmml
 
 from pycoMeth.meth_seg.emissions import EmissionLikelihoodFunction
 
@@ -58,71 +58,34 @@ class SegmentationHMM:
         
         raise RuntimeError("Transition %d to %d is not a valid transition in segmentation " "HMM " % (i, j))
     
-    # def forward(self, observations, obs_c):
-    #     e_fn = self.e_fn.likelihood
-    #     M = self.num_segments
-    #     R = observations.shape[0]
-    #     N = observations.shape[1]
-    #     F = np.zeros((N, M), dtype=np.float) + self.eps
-    #     F[0, 0] = 1 - F[0, :].sum() - self.eps
-    #     F = np.log(F)
-    #     start_prob = np.zeros(M) + self.eps
-    #     start_prob[0] = 1
-    #     start_prob = np.log(start_prob)
-        
-    #     for k in range(N):
-    #         o = observations[:, k]
-    #         for i in range(M):
-    #             e = e_fn(i, o, obs_c)
-                
-    #             if k == 0:
-    #                 F[k, i] = e + start_prob[i]
-    #                 continue
-                    
-    #                 # Stay probability
-    #             F[k, i] = e + F[k - 1, i] + self.t_fn(i, i)
-                
-    #             # Move probabilty
-    #             if i > 0:
-    #                 F[k, i] = logaddexp(F[k, i], e + F[k - 1, i - 1] + self.t_fn(i - 1, i))
-                
-    #             # End probability
-    #             if i == M - 1:
-    #                 # if end state we could have come from anywhere to the
-    #                 # end state:
-    #                 for j in range(M - 2):  # exclude last 2 because those were already
-    #                     # handled above
-    #                     F[k, i] = logaddexp(F[k, i], e + F[k - 1, j] + self.t_fn(j, i))
-    #     evidence = F[-1, -1]
-    #     return F, evidence
-
     def forward(self, observations, obs_c):
         e_fn = self.e_fn.likelihood
         M = self.num_segments
+        R = observations.shape[0]
         N = observations.shape[1]
-        F = np.full((N, M), self.eps, dtype=np.float)
+        F = np.zeros((N, M), dtype=float) + self.eps
         F[0, 0] = 1 - F[0, :].sum() - self.eps
         F = np.log(F)
-        start_prob = np.full(M, self.eps)
+        start_prob = np.zeros(M) + self.eps
         start_prob[0] = 1
         start_prob = np.log(start_prob)
-
+        
         for k in range(N):
             o = observations[:, k]
             for i in range(M):
                 e = e_fn(i, o, obs_c)
-
+                
                 if k == 0:
                     F[k, i] = e + start_prob[i]
                     continue
-
-                # Stay probability
+                    
+                    # Stay probability
                 F[k, i] = e + F[k - 1, i] + self.t_fn(i, i)
-
-                # Move probability
+                
+                # Move probabilty
                 if i > 0:
                     F[k, i] = logaddexp(F[k, i], e + F[k - 1, i - 1] + self.t_fn(i - 1, i))
-
+                
                 # End probability
                 if i == M - 1:
                     # if end state we could have come from anywhere to the
@@ -439,3 +402,37 @@ class SegmentationHMM:
                 print(f'Total time taken: {time.time() - start_time}')
 
             return segment_p, posterior
+
+    def baum_welch_hmml(
+        self,
+        observations: np.ndarray,
+        tol: float = np.exp(-4),
+        it_hook=None,
+        samples: np.ndarray = None,
+        verbose: bool = False,
+        early_stopping_tol: float = 1e-5,
+    ) -> Tuple[Dict[int, np.ndarray], np.ndarray]:
+
+        R = observations.shape[0]
+        N = observations.shape[1]
+
+        if samples is None:
+            self.obs_c = np.arange(R)
+        else:
+            self.obs_c = samples
+                
+        C = len(set(self.obs_c))
+
+        # Create a Multinomial HMM
+        model = hmml.MultinomialHMM(n_components=C, tol=tol, n_iter=100)
+
+        # Fit model
+        model.fit(observations.reshape(-1, 1))
+
+        # Get segment parameters (emission probabilities)
+        segment_p = model.emissionprob_
+
+        # Compute posterior probabilities
+        posterior = model.predict_proba(observations)
+
+        return segment_p, posterior

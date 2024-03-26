@@ -37,6 +37,8 @@ def segment(sparse_matrix: SparseMethylationMatrixContainer, max_segments_per_wi
     )
     
     log.debug(f"Core {core_number}: Running Baum-Welch algorithm")
+    
+    segment_p_hmml, posterior_hmml = hmm.baum_welch_hmml(obs, tol=np.exp(-8), samples=sample_ids, verbose = verbose)
     segment_p, posterior = hmm.baum_welch(obs, tol=np.exp(-8), samples=sample_ids, verbose = verbose)
     
     log.debug(f"Core {core_number}: Running MAP estimation")
